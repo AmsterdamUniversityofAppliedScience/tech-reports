@@ -1,0 +1,256 @@
+---
+title: "Nationaal Georegister API for BAG and BRK"
+author: "Jeroen Groot"
+date: "February 28, 2018"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+
+library(httr)
+library(jsonlite)
+library(curl)
+library(ggplot2)
+library(ggmap)
+library(rgdal)
+library(dplyr)
+library(plyr)
+library(tidyr)
+library(readxl)
+library(leaflet)
+```
+
+## Nationaal Georegister: Getting Data from BAG and BRK together
+
+This is a markdown file that should not be run as a whole, it is used as a structuring for code chuncks and descriptions. It is a quick and dirty way to accomplish the goal:
+
+The goal is to get from a postcode and number to a total information set with geolocation, parcelinfo with size etc. The API on geodata.nationaalgeoregister.nl is used, there are other options.
+
+Very helpfull github page for ApacheSolr REST API
+https://github.com/PDOK/locatieserver/wiki/API-Locatieserver
+
+
+### STEP1: list of adresses
+
+```{r datapreparation}
+# This chunck prepares data for URL building on the REST api of the geodata bag-registry
+# These lines differ greatly for different datasets, so always do your own cleaning and prepping
+# This chunck is included as an example, MRA_HR data is not included in repository
+
+# Add in your own list of adress
+MRA_HR <- read_excel("/BAG-register/MRA HR data jul2017.xlsx", sheet=2)
+
+## Fixing abbreviated names in adress, not needed*
+## *So called PTT abbreviations are allowed in BAG/GEO-registry
+MRA_HR$ADRES_VA<-gsub(pattern="dwstr\\s",replacement="dwarsstraat ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="burgw\\s",replacement="burgwal ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="Nieuwez\\s",replacement="Nieuwezijds ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="Oudez\\s",replacement="Oudezijds ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="str\\s",replacement="straat ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="stra\\s",replacement="straat ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="pln\\s",replacement="plein ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="kd\\s",replacement="kade ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="wg\\s",replacement="weg ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="laa\\s",replacement="laan ",MRA_HR$ADRES_VA)
+MRA_HR$ADRES_VA<-gsub(pattern="C Groothandelsmarkt\\s",
+replacement="Centrale Groothandelsmarkt ",MRA_HR$ADRES_VA)
+
+## Fixing names, numbers etc
+MRA_HR<-MRA_HR %>% separate(ADRES_VA,sep="(?<=[a-zA-Z\\s])\\s(?=[0-9])",extra="merge",
+                            remove=FALSE, into=c("openbareruimte","rest"))
+MRA_HR<-MRA_HR %>% separate(rest,sep="(?=\\D)",remove=TRUE,extra="merge",
+                            into=c("huisnummer","huisnummertoevoeging"))
+MRA_HR$huisnummertoevoeging <- gsub(pattern="[[:punct:]]",replacement="", MRA_HR$huisnummertoevoeging)
+MRA_HR$huisnummertoevoeging[is.na(MRA_HR$huisnummertoevoeging)] <- ""
+MRA_HR$postcode <- paste0(MRA_HR$PC_CIJFVA,MRA_HR$PC_LETTVA)
+MRA_HR$openbareruimte<-gsub(pattern="1e\\s",replacement="Eerste ",MRA_HR$openbareruimte)
+MRA_HR$openbareruimte<-gsub(pattern="2e\\s",replacement="Tweede ",MRA_HR$openbareruimte)
+MRA_HR$openbareruimte<-gsub(pattern="3e\\s",replacement="Derde ",MRA_HR$openbareruimte)
+MRA_HR$openbareruimte<-gsub(pattern="4e\\s",replacement="Vierde ",MRA_HR$openbareruimte)
+
+# Save clean values accordingly
+Postcodes <- MRA_HR$postcode
+Housenumbers <- MRA_HR$huisnummer
+Toevoeging <- MRA_HR$huisnummertoevoeging
+```
+
+### STEP2: Create url list for ApacheSolr server on georegister.nl
+
+```{r URLlisting}
+# This chunck builds the urllist for the GET-requests in the next chunk
+# It pastes together Postcodes, housenumbers and if present Housenumber additions (e.g. A, B, rd, etc)
+# unique is used to prevent duplicates
+URLlist <- unique(paste0("https://geodata.nationaalgeoregister.nl/locatieserver/v3/free?q=postcode:",
+                         Postcodes,"+and+huisnummer:", Housenumbers,
+                         # sapply to do a full list check
+                         # ifelse: if there is an addition add the whole paste, else add nothing
+                         sapply(Toevoeging, function(t){ifelse(!t=="",
+                                                        paste0("+and+huisnummertoevoeging:",t),"")})))
+```
+
+
+### STEP3: Cycle through list and get all results together in one
+
+```{r GETresults}
+# This chunk is used to cycle through the entire URL-list with a for-loop (still improve)
+# and for each result, create a propper format and bind it to a total frame called georeg
+# This code could be much more efficient however it is not a limitting factor, the speed is defined by 
+# the speed of the API at the georegistry
+
+Georeg <- NULL
+for(i in URLlist){
+  # GET info from server
+  GET.response<-GET(i)
+  # to character from JsonRaw
+  result<-paste(rawToChar(GET.response$content),collapse="")
+  # frame to add to total frame
+  addFrame<-fromJSON(result)
+  # only if there are results found
+  if(addFrame$response$numFound>0){
+    # break structure into list
+    dfperc<-unlist(as.character(addFrame$response$docs$gekoppeld_perceel))
+    # rebuild as a data.frame
+    addFrame<-data.frame(addFrame$response$docs[,
+                                                names(addFrame$response$docs)!="gekoppeld_perceel"],
+                         parcel_code=ifelse(length(dfperc)>0,dfperc,NA))
+    # bind to master frame (dirty)
+    Georeg <- rbind.fill(Georeg,addFrame)
+  }
+}
+```
+
+### STEP 4: Getting coordinates ready
+
+```{r CoordCleanup}
+# This chunck fixes the return format for coordinates that result from the previous GET request
+
+# split on space and bracket, select correct x and y
+Georeg$coord.x <- as.numeric(sapply(Georeg$centroide_ll,
+                                    function(x){
+                                      strsplit(strsplit(x, 
+                                                        split="\\(")[[1]][2],
+                                                            split="\\s")[[1]][1]}))
+Georeg$coord.y <- as.numeric(sapply(Georeg$centroide_ll,
+                                    function(y){
+                                      strsplit(strsplit(y,
+                                                        split="\\s")[[1]][2],
+                                                            split="\\)")[[1]][1]}))
+```
+
+### STEP 5: Create url list for ApacheSolr server on georegister.nl with resulting ID's
+
+```{r URLlisting2}
+# This chunck builds the urllist for the GET-requests in the next chunk
+# These URLs contain the id's of all the object from the previous GET-results
+# Based on the id's you can get the parcel dimensions, and more importantly, 
+# the function of the building (e.g. Livingspacer, office, industry, etc.)
+
+# Long url, dont add <return> inside string!
+WFS.URLlist<-unique(paste0("https://geodata.nationaalgeoregister.nl/bag/wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=bag:verblijfsobject&outputFormat=json&CQL_FILTER=identificatie=",
+                           Georeg$adresseerbaarobject_id))
+```
+
+### STEP 6: Cycle through ID-list and get all results together in one
+
+```{r GETresults2}
+# This chunck sends the id-urls as a GET-request back into the georegistry API
+# This way the added information from another location inside the API is also collected
+# Later on the two resulting frames will be added together
+
+WFSframe<-NULL
+for(s in WFS.URLlist[1:100]){
+  # GET info from server
+  GET.response<-GET(s)
+  # to character from JsonRaw
+  result<-paste(rawToChar(GET.response$content),collapse="")
+  # frame to add to total frame
+  addFrame<-fromJSON(result)
+  # only if there are results found
+  if(addFrame$totalFeatures>0){
+    # break structure into list
+    addFrame<-data.frame(addFrame$features$properties[,-15],
+                         addFrame$features$properties$pandgeometrie)
+    # bind to master frame (dirty)
+    WFSframe<-rbind.fill(WFSframe,addFrame)
+  }
+}
+```
+
+### STEP 7: Merging both results together
+
+```{r Merge}
+# This chunck merges together the data frame with Address info and the data frame with parcel 
+# dimension and function
+# To merge the column names are first equalized
+WFSframe$identificatie <- paste0("0", as.character(WFSframe$identificatie))
+colnames(WFSframe)[1] <- "adresseerbaarobject_id"
+
+# Merge on object id, don't use all columns
+Totalframe <- merge(Georeg,WFSframe[,c(1,2,3,4,11,12,13,14,15,16)],
+                    by="adresseerbaarobject_id")
+```
+
+### <IN PROGRESS>
+
+<!-- ###Plotting -->
+
+<!-- ```{r jahoorhebhetzelfmaargedaan} -->
+<!-- # function for RD-coords to Long Lat -->
+<!-- rd2ws <- function(X,Y){ -->
+<!--   dX=(X-155000)*10^-5 -->
+<!--   dY=(Y-463000)*10^-5 -->
+
+<!--   SomN=(3235.65389*dY)+(-32.58297*dX^2)+(-0.2475*dY^2)+(-0.84978*dX^2*dY)+(-0.0655*dY^3)+(-0.01709*dX^2*dY^2)+(-0.00738*dX)+(0.0053*dX^4)+(-0.00039*dX^2*dY^3)+(0.00033*dX^4*dY)+(-0.00012*dX*dY) -->
+<!--   SomE=(5260.52916*dX)+(105.94684*dX*dY)+(2.45656*dX*dY^2)+(-0.81885*dX^3)+(0.05594*dX*dY^3)+(-0.05607*dX^3*dY)+(0.01199*dY)+(-0.00256*dX^3*dY^2)+(0.00128*dX*dY^4)+(0.00022*dY^2)+(-0.00022*dX^2)+(0.00026*dX^5) -->
+
+<!--   Latitude=52.15517+(SomN/3600) -->
+<!--   Longitude=5.387206+(SomE/3600) -->
+
+<!--   return(data.frame(Longitude, Latitude)) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- Totalframe.poly <- lapply(1:dim(Totalframe)[1], -->
+<!--           function(x){ -->
+<!--             y<-unlist(Totalframe$coordinates[x])[unlist(Totalframe$coordinates[x])!=0.0] -->
+<!--             y<-rd2ws(y[1:(length(y)/2)], -->
+<!--                      y[((length(y)/2)+1):length(y)]) -->
+<!--             Polygon(y, hole=FALSE) -->
+<!--           }) -->
+<!-- Polys <- SpatialPolygons(list(Polygons(Totalframe.poly,1))) -->
+<!-- Polys.f <- fortify(Polys) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #Option1ggplotHEAVYWITHLARGERDATASETS -->
+<!-- ##downloadMapofNL -->
+<!-- NLmap <- -->
+<!--   get_map(location = c( -->
+<!--   lon = mean(as.numeric(Georeg$coord.x), na.rm = T), -->
+<!--   lat = mean(as.numeric(Georeg$coord.y), na.rm = T) -->
+<!--   ), zoom = 9) -->
+<!-- ggmap(NLmap)+ -->
+<!--   #plotpolygonsofparcels -->
+<!--   # geom_polygon(data = Polys.f, aes(x = long, y = lat, group = group), -->
+<!--                # fill = "Pink", col = "Darkred", alpha = 0.5)+ -->
+<!--   # plotcoordsofadresses -->
+<!--   geom_point(data=Georeg,aes(x=as.numeric(coord.x),y=as.numeric(coord.y)), -->
+<!--              col="Yellow")+ -->
+<!--   theme(axis.line = element_blank(), axis.title = element_blank(), axis.text = element_blank()) -->
+
+<!-- ##Option2leafletSUPERHEAVYWITHLARGERDATASETS -->
+<!-- leaflet(Polys)%>% -->
+<!--   addProviderTiles("Stamen.TonerLite", -->
+<!--                     options=providerTileOptions(noWrap=TRUE))%>% -->
+<!--   fitBounds(4.866167,52.35968,4.908988,52.37665)%>% -->
+<!-- #Polygonsofparcels -->
+<!--   # addPolygons(color="Darkred", fillColor="Pink", fillOpacity=0.9,opacity=0.9)%>% -->
+<!-- #Markersoncoordsofadresses -->
+<!--   addMarkers(lng=as.numeric(Georeg$coord.x),lat=as.numeric(Georeg$coord.y)) -->
+<!-- ``` -->
+
+
