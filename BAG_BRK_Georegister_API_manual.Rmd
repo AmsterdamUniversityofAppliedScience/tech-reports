@@ -35,11 +35,9 @@ https://github.com/PDOK/locatieserver/wiki/API-Locatieserver
 
 ### STEP1: list of adresses
 
-```{r datapreparation}
-# This chunck prepares data for URL building on the REST api of the geodata bag-registry
-# These lines differ greatly for different datasets, so always do your own cleaning and prepping
-# This chunck is included as an example, MRA_HR data is not included in repository
+This chunck prepares data for URL building on the REST api of the geodata bag-registry. These lines differ greatly for different datasets, so always do your own cleaning and prepping. This chunck is included as an example, MRA_HR data is not included in repository.
 
+```{r datapreparation}
 # Add in your own list of adress
 MRA_HR <- read_excel("/BAG-register/MRA HR data jul2017.xlsx", sheet=2)
 
@@ -79,10 +77,9 @@ Toevoeging <- MRA_HR$huisnummertoevoeging
 
 ### STEP2: Create url list for ApacheSolr server on georegister.nl
 
+This chunck builds the urllist for the GET-requests in the next chunk. It pastes together Postcodes, Housenumbers and if present Housenumber additions (e.g. A, B, rd, etc). `unique()` is used to prevent duplicates.
+
 ```{r URLlisting}
-# This chunck builds the urllist for the GET-requests in the next chunk
-# It pastes together Postcodes, housenumbers and if present Housenumber additions (e.g. A, B, rd, etc)
-# unique is used to prevent duplicates
 URLlist <- unique(paste0("https://geodata.nationaalgeoregister.nl/locatieserver/v3/free?q=postcode:",
                          Postcodes,"+and+huisnummer:", Housenumbers,
                          # sapply to do a full list check
@@ -94,12 +91,9 @@ URLlist <- unique(paste0("https://geodata.nationaalgeoregister.nl/locatieserver/
 
 ### STEP3: Cycle through list and get all results together in one
 
-```{r GETresults}
-# This chunk is used to cycle through the entire URL-list with a for-loop (still improve)
-# and for each result, create a propper format and bind it to a total frame called georeg
-# This code could be much more efficient however it is not a limitting factor, the speed is defined by 
-# the speed of the API at the georegistry
+This chunk is used to cycle through the entire URL-list with a for-loop (still improve) and for each result, create a propper format and bind it to a total frame called `georeg`. This code could be much more efficient however it is not a limitting factor, the speed is defined by the speed of the API at the georegistry.
 
+```{r GETresults}
 Georeg <- NULL
 for(i in URLlist){
   # GET info from server
@@ -124,42 +118,37 @@ for(i in URLlist){
 
 ### STEP 4: Getting coordinates ready
 
-```{r CoordCleanup}
-# This chunck fixes the return format for coordinates that result from the previous GET request
+This chunck fixes the return format for coordinates that result from the previous GET request.
 
+```{r CoordCleanup}
 # split on space and bracket, select correct x and y
 Georeg$coord.x <- as.numeric(sapply(Georeg$centroide_ll,
                                     function(x){
                                       strsplit(strsplit(x, 
-                                                        split="\\(")[[1]][2],
-                                                            split="\\s")[[1]][1]}))
+                                                split="\\(")[[1]][2],
+                                                split="\\s")[[1]][1]}))
 Georeg$coord.y <- as.numeric(sapply(Georeg$centroide_ll,
                                     function(y){
                                       strsplit(strsplit(y,
-                                                        split="\\s")[[1]][2],
-                                                            split="\\)")[[1]][1]}))
+                                                split="\\s")[[1]][2],
+                                                split="\\)")[[1]][1]}))
 ```
 
 ### STEP 5: Create url list for ApacheSolr server on georegister.nl with resulting ID's
 
-```{r URLlisting2}
-# This chunck builds the urllist for the GET-requests in the next chunk
-# These URLs contain the id's of all the object from the previous GET-results
-# Based on the id's you can get the parcel dimensions, and more importantly, 
-# the function of the building (e.g. Livingspacer, office, industry, etc.)
+This chunck builds the urllist for the GET-requests in the next chunk. These URLs contain the id's of all the object from the previous GET-results. Based on the id's you can get the parcel dimensions, and more importantly, the function of the building (e.g. Livingspacer, office, industry, etc.)
 
+```{r URLlisting2}
 # Long url, dont add <return> inside string!
-WFS.URLlist<-unique(paste0("https://geodata.nationaalgeoregister.nl/bag/wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=bag:verblijfsobject&outputFormat=json&CQL_FILTER=identificatie=",
+WFS.URLlist <- unique(paste0("https://geodata.nationaalgeoregister.nl/bag/wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=bag:verblijfsobject&outputFormat=json&CQL_FILTER=identificatie=",
                            Georeg$adresseerbaarobject_id))
 ```
 
 ### STEP 6: Cycle through ID-list and get all results together in one
 
-```{r GETresults2}
-# This chunck sends the id-urls as a GET-request back into the georegistry API
-# This way the added information from another location inside the API is also collected
-# Later on the two resulting frames will be added together
+This chunck sends the id-urls as a GET-request back into the georegistry API. This way the added information from another location inside the API is also collected. Later on the two resulting frames will be added together.
 
+```{r GETresults2}
 WFSframe<-NULL
 for(s in WFS.URLlist[1:100]){
   # GET info from server
@@ -181,9 +170,9 @@ for(s in WFS.URLlist[1:100]){
 
 ### STEP 7: Merging both results together
 
+This chunck merges together the data frame with Address info and the data frame with parcel dimension and function.
+
 ```{r Merge}
-# This chunck merges together the data frame with Address info and the data frame with parcel 
-# dimension and function
 # To merge the column names are first equalized
 WFSframe$identificatie <- paste0("0", as.character(WFSframe$identificatie))
 colnames(WFSframe)[1] <- "adresseerbaarobject_id"
@@ -193,7 +182,7 @@ Totalframe <- merge(Georeg,WFSframe[,c(1,2,3,4,11,12,13,14,15,16)],
                     by="adresseerbaarobject_id")
 ```
 
-### <IN PROGRESS>
+### <VISUALISATIONS - IN PROGRESS>
 
 <!-- ###Plotting -->
 
