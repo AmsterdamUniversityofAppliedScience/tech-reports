@@ -42,9 +42,6 @@ This gives us access to the API, without it all responses will be denied.
 ```{r}
 token <- "<INSERT YOUR TOKEN HERE>"
 ```
-```{r echo=FALSE}
-token <- "d26b4833-b263-43f7-bf94-0cd726197601"
-```
 
 Secondly the R-libraries used and the reason they are included:
 ```{r}
